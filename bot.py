@@ -22,17 +22,24 @@ from telegram.ext import (
 )
 from supabase import create_client, Client
 
+# Enable logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 # -------------------- CONFIG --------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://yourproject.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "your-anon-key")
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "123456789"))  # Your Telegram ID
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))  # Set to 0 if not provided
 PORT = int(os.environ.get("PORT", 10000))
+
+if ADMIN_USER_ID == 0:
+    logger.warning("ADMIN_USER_ID not set! Admin commands will be disabled.")
 
 # -------------------- SUPABASE SETUP --------------------
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ---------- Database helper functions (same as before) ----------
+# ---------- Database helper functions ----------
 def add_user(user_id: int, username: str, first_name: str):
     supabase.table('users').upsert({
         'user_id': user_id,
@@ -209,8 +216,6 @@ def get_main_keyboard():
  CHOOSE_PREMIUM_CAT, CHOOSE_PREMIUM_OPTION, ASK_QUANTITY,
  ASK_PAYER_NAME, ASK_SCREENSHOT) = range(8)
 
-user_temp_data = {}
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_bot_on() and user.id != ADMIN_USER_ID:
@@ -231,29 +236,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.effective_user.id
-    if text == "🛍️ Buy Items":
+    logger.info(f"Menu text received from {user_id}: '{text}'")
+    
+    if text in ["🛍️ Buy Items", "Buy Items"]:
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🎫 Vouchers", callback_data="buy_vouchers")],
             [InlineKeyboardButton("⭐ Premiums", callback_data="buy_premiums")]
         ])
         await update.message.reply_text("Select category:", reply_markup=keyboard)
-        return
-    elif text == "📦 My Orders":
+    elif text in ["📦 My Orders", "My Orders"]:
         orders = get_user_orders(user_id, 'accepted')
         await update.message.reply_text(format_my_orders(orders), parse_mode="Markdown")
-    elif text == "🔄 Recover Orders":
+    elif text in ["🔄 Recover Orders", "Recover Orders"]:
         await update.message.reply_text("📝 Please send the Order ID you want to recover:")
         context.user_data['recover_mode'] = True
-    elif text == "🆘 Support":
+    elif text in ["🆘 Support", "Support", "support"]:
         await update.message.reply_text(
             "🆘 **Support Contact**\n━━━━━━━━━━━━━━\n@AutoEarnX_SupportBot",
             parse_mode="Markdown"
         )
-    elif text == "📢 Our Channels":
+    elif text in ["📢 Our Channels", "Our Channels"]:
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("📢 Join Channel", url="https://t.me/your_channel")]
         ])
         await update.message.reply_text("Join our official channels for updates and deals:", reply_markup=keyboard)
+    else:
+        await update.message.reply_text("Please use the buttons below.", reply_markup=get_main_keyboard())
 
 async def handle_recover_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('recover_mode'):
@@ -427,8 +435,10 @@ async def ask_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # -------------------- ADMIN HANDLERS --------------------
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_USER_ID:
-        await update.message.reply_text("Unauthorized.")
+    user_id = update.effective_user.id
+    logger.info(f"Admin command from user {user_id}, ADMIN_USER_ID={ADMIN_USER_ID}")
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ Unauthorized. You are not the admin.")
         return
     keyboard = ReplyKeyboardMarkup([
         ["➕ ADD", "📦 STOCK"],
@@ -438,16 +448,18 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ["🚫 BLOCK", "✅ UNBLOCK"],
         ["🔌 TURN OFF", "🔌 TURN ON"]
     ], resize_keyboard=True)
-    await update.message.reply_text("Admin Panel:", reply_markup=keyboard)
+    await update.message.reply_text("🛠️ **Admin Panel**", parse_mode="Markdown", reply_markup=keyboard)
 
 async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        return
     text = update.message.text
     if text == "🔌 TURN OFF":
         set_bot_on_off(False)
-        await update.message.reply_text("Bot is now OFF. Users cannot interact.")
+        await update.message.reply_text("🔴 Bot is now OFF. Users cannot interact.")
     elif text == "🔌 TURN ON":
         set_bot_on_off(True)
-        await update.message.reply_text("Bot is now ON.")
+        await update.message.reply_text("🟢 Bot is now ON.")
     elif text == "📦 STOCK":
         await update.message.reply_text(format_stock_report(), parse_mode="Markdown")
     elif text == "📋 LAST 10 PURCHASES":
@@ -458,7 +470,7 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"👥 Total users who started bot: {len(users)}")
     elif text == "🖼️ UPDATE QR":
         context.user_data['admin_action'] = 'update_qr'
-        await update.message.reply_text("Send me the new QR code as a photo:")
+        await update.message.reply_text("📸 Send me the new QR code as a photo:")
     elif text == "➕ ADD":
         context.user_data['admin_action'] = 'add'
         await update.message.reply_text("Send type (voucher / premium):")
@@ -470,15 +482,17 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("Send type (voucher / premium):")
     elif text == "📢 BROADCAST":
         context.user_data['admin_action'] = 'broadcast'
-        await update.message.reply_text("Send the message to broadcast:")
+        await update.message.reply_text("📢 Send the message to broadcast:")
     elif text == "🚫 BLOCK":
         context.user_data['admin_action'] = 'block'
-        await update.message.reply_text("Send the username (without @) to block:")
+        await update.message.reply_text("🚫 Send the username (without @) to block:")
     elif text == "✅ UNBLOCK":
         context.user_data['admin_action'] = 'unblock'
-        await update.message.reply_text("Send the username to unblock:")
+        await update.message.reply_text("✅ Send the username to unblock:")
 
 async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        return
     action = context.user_data.get('admin_action')
     if not action:
         return
@@ -550,14 +564,14 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await asyncio.sleep(0.05)
             except:
                 pass
-        await update.message.reply_text(f"Broadcast sent to {success} users.")
+        await update.message.reply_text(f"📢 Broadcast sent to {success} users.")
         context.user_data.pop('admin_action')
     elif action == 'block':
         username = text.strip()
         res = supabase.table('users').select('user_id').eq('username', username).execute()
         if res.data:
             block_user(res.data[0]['user_id'])
-            await update.message.reply_text(f"Blocked @{username}")
+            await update.message.reply_text(f"🚫 Blocked @{username}")
         else:
             await update.message.reply_text("User not found.")
         context.user_data.pop('admin_action')
@@ -566,12 +580,15 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         res = supabase.table('users').select('user_id').eq('username', username).execute()
         if res.data:
             unblock_user(res.data[0]['user_id'])
-            await update.message.reply_text(f"Unblocked @{username}")
+            await update.message.reply_text(f"✅ Unblocked @{username}")
         else:
             await update.message.reply_text("User not found.")
         context.user_data.pop('admin_action')
 
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        await update.callback_query.answer("Unauthorized", show_alert=True)
+        return
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -595,7 +612,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=order['user_id'],
                 text=f"✅ Your order {order_id} has been accepted!\n\nHere are your codes/account:\n{codes_str}"
             )
-            await query.edit_message_text(f"Order {order_id} accepted.")
+            await query.edit_message_text(f"✅ Order {order_id} accepted.")
         else:
             await query.edit_message_text("Order already processed or invalid.")
     elif data.startswith("decline_"):
@@ -604,7 +621,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order = get_order_by_id(order_id)
         if order:
             await context.bot.send_message(chat_id=order['user_id'], text=f"❌ Your order {order_id} was declined by admin.")
-        await query.edit_message_text(f"Order {order_id} declined.")
+        await query.edit_message_text(f"❌ Order {order_id} declined.")
 
 # -------------------- FLASK HEALTH CHECK SERVER --------------------
 flask_app = Flask('')
@@ -620,6 +637,7 @@ def run_flask():
 def main():
     # Start Flask health server in background
     Thread(target=run_flask, daemon=True).start()
+    logger.info(f"Flask health server running on port {PORT}")
 
     app = Application.builder().token(BOT_TOKEN).build()
 
@@ -648,6 +666,7 @@ def main():
     app.add_handler(MessageHandler(filters.ALL & filters.User(user_id=ADMIN_USER_ID), handle_admin_input))
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(accept_|decline_)"))
 
+    logger.info("Bot started polling...")
     app.run_polling()
 
 if __name__ == "__main__":
