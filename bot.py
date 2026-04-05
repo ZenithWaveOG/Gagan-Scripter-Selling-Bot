@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-# telegram_selling_bot.py
-# Complete bot with user menu, buy flow (vouchers & premium), admin panel, Supabase storage.
-
 import os
 import logging
 import asyncio
 import random
 import string
+import warnings
 from datetime import datetime
 from typing import Dict, Any, List, Optional
+from threading import Thread
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+# Suppress PTB warning about CallbackQueryHandler in ConversationHandler
+from telegram.warnings import PTBUserWarning
+warnings.filterwarnings("ignore", category=PTBUserWarning)
+
+# Flask for health check server
+from flask import Flask
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ConversationHandler, filters, ContextTypes
@@ -22,11 +27,12 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://yourproject.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "your-anon-key")
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "123456789"))  # Your Telegram ID
+PORT = int(os.environ.get("PORT", 10000))
 
 # -------------------- SUPABASE SETUP --------------------
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ---------- Database helper functions ----------
+# ---------- Database helper functions (same as before) ----------
 def add_user(user_id: int, username: str, first_name: str):
     supabase.table('users').upsert({
         'user_id': user_id,
@@ -198,12 +204,12 @@ def get_main_keyboard():
     ], resize_keyboard=True)
 
 # -------------------- USER HANDLERS --------------------
-# Conversation states for buying
+# Conversation states
 (CHOOSE_TYPE, CHOOSE_VOUCHER_CAT, CHOOSE_VOUCHER_OPTION,
  CHOOSE_PREMIUM_CAT, CHOOSE_PREMIUM_OPTION, ASK_QUANTITY,
  ASK_PAYER_NAME, ASK_SCREENSHOT) = range(8)
 
-user_temp_data = {}  # store temporary order info per user_id
+user_temp_data = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -266,7 +272,6 @@ async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    user_id = query.from_user.id
     if data == "buy_vouchers":
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("👗 Shein", callback_data="voucher_shein")],
@@ -274,19 +279,17 @@ async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🛒 BigBasket", callback_data="voucher_bigbasket")]
         ])
         await query.edit_message_text("Select voucher brand:", reply_markup=keyboard)
-        return ConversationHandler.END
+        return
     elif data == "buy_premiums":
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🎬 Netflix Premium", callback_data="premium_netflix")]
         ])
         await query.edit_message_text("Select premium service:", reply_markup=keyboard)
-        return ConversationHandler.END
-    # Voucher subcategories
+        return
     elif data.startswith("voucher_"):
         brand = data.split("_")[1]
         context.user_data['buy_type'] = 'voucher'
         context.user_data['category'] = brand
-        # Define options per brand
         if brand == "shein":
             options = ["500 Off On 500", "1000 Off On 1000", "2000 Off On 2000", "4000 Off On 4000"]
         elif brand == "myntra":
@@ -297,18 +300,17 @@ async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         buttons = [[InlineKeyboardButton(opt, callback_data=f"opt_{opt.replace(' ', '_')}")] for opt in options]
         await query.edit_message_text(f"Choose {brand.upper()} option:", reply_markup=InlineKeyboardMarkup(buttons))
-        return ConversationHandler.END
+        return
     elif data.startswith("opt_"):
         option_raw = data[4:].replace('_', ' ')
         context.user_data['option_name'] = option_raw
-        # fetch stock, min, price
         stock = get_stock(context.user_data['buy_type'], context.user_data['category'], option_raw)
         if not stock:
             await query.edit_message_text("❌ Option not found in database. Contact admin.")
-            return ConversationHandler.END
+            return
         if stock['available_stock'] <= 0:
             await query.edit_message_text("❌ Out of stock. Please try later.")
-            return ConversationHandler.END
+            return
         context.user_data['product_info'] = stock
         await query.edit_message_text(
             f"🏷️ *{option_raw}*\n"
@@ -329,10 +331,10 @@ async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             stock = get_stock('premium', service, option_name)
             if not stock:
                 await query.edit_message_text("❌ Premium option not configured. Contact admin.")
-                return ConversationHandler.END
+                return
             if stock['available_stock'] <= 0:
                 await query.edit_message_text("❌ No premium accounts available.")
-                return ConversationHandler.END
+                return
             context.user_data['product_info'] = stock
             await query.edit_message_text(
                 f"⭐ *Netflix Premium*\n"
@@ -367,7 +369,6 @@ async def ask_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not qr_url:
         await update.message.reply_text("⚠️ QR code not configured. Please contact admin.")
         return ConversationHandler.END
-    # Send invoice with QR
     invoice_text = format_order_invoice(order_id, context.user_data['option_name'], qty, total)
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Verify Payment", callback_data="verify_payment")]
@@ -392,11 +393,8 @@ async def ask_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please send a photo as screenshot.")
         return ASK_SCREENSHOT
     photo_file = await update.message.photo[-1].get_file()
-    # For simplicity store URL as file_id (Supabase storage not implemented fully here)
-    # In production upload to Supabase storage and save public URL.
     file_id = photo_file.file_id
     context.user_data['screenshot_url'] = file_id
-    # Create order in DB with pending status
     create_order(
         order_id=context.user_data['order_id'],
         user_id=update.effective_user.id,
@@ -410,7 +408,6 @@ async def ask_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         screenshot_url=file_id
     )
     await update.message.reply_text("⏳ Order placed! Waiting for admin approval.")
-    # Notify admin
     admin_text = (
         f"🆕 New Order Pending\n"
         f"🆔 {context.user_data['order_id']}\n"
@@ -424,7 +421,6 @@ async def ask_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("❌ Decline", callback_data=f"decline_{context.user_data['order_id']}")]
     ])
     await context.bot.send_message(chat_id=ADMIN_USER_ID, text=admin_text, reply_markup=keyboard)
-    # Clean up
     for key in ['buy_type', 'category', 'option_name', 'quantity', 'total_amount', 'order_id', 'payer_name', 'product_info']:
         context.user_data.pop(key, None)
     return ConversationHandler.END
@@ -487,19 +483,16 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not action:
         return
     text = update.message.text
-    user_id = update.effective_user.id
     if action == 'update_qr':
         if update.message.photo:
             photo = await update.message.photo[-1].get_file()
             file_id = photo.file_id
-            update_qr(file_id)  # store file_id (in production upload to storage)
+            update_qr(file_id)
             await update.message.reply_text("✅ QR updated successfully.")
         else:
             await update.message.reply_text("Please send a photo.")
         context.user_data.pop('admin_action')
     elif action == 'add':
-        # Simplified: expects input like "voucher shein 500_off_500" then codes line by line
-        # For brevity, we implement a simple step-by-step
         if 'add_step' not in context.user_data:
             context.user_data['add_step'] = 1
             context.user_data['add_data'] = {}
@@ -518,7 +511,6 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         elif step == 3:
             if text == '/done':
                 if context.user_data['add_data']['type'] == 'premium':
-                    # For premium, each message is one account
                     full_message = "\n".join(context.user_data['add_codes_list'])
                     add_premium_account('premium', context.user_data['add_data']['type'], context.user_data['add_data']['option'], full_message)
                 else:
@@ -531,7 +523,6 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             else:
                 context.user_data['add_codes_list'].append(text)
     elif action == 'price':
-        # type, category, option, new price
         parts = text.split()
         if len(parts) < 4:
             await update.message.reply_text("Format: type category option_name price\nExample: voucher shein '500 Off On 500' 99.0")
@@ -563,7 +554,6 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data.pop('admin_action')
     elif action == 'block':
         username = text.strip()
-        # find user by username
         res = supabase.table('users').select('user_id').eq('username', username).execute()
         if res.data:
             block_user(res.data[0]['user_id'])
@@ -589,12 +579,10 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order_id = data[7:]
         order = get_order_by_id(order_id)
         if order and order['status'] == 'pending':
-            # Fetch codes from stock
             stock = get_stock(order['type'], order['category'], order['option_name'])
             if not stock or stock['available_stock'] < order['quantity']:
                 await query.edit_message_text("❌ Not enough stock to accept.")
                 return
-            # Pop codes
             codes_to_give = stock['codes'][:order['quantity']]
             remaining_codes = stock['codes'][order['quantity']:]
             supabase.table('stocks').update({
@@ -603,7 +591,6 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }).eq('type', order['type']).eq('category', order['category']).eq('option_name', order['option_name']).execute()
             codes_str = "\n".join(codes_to_give)
             update_order_status(order_id, 'accepted', codes_str)
-            # Send to user
             await context.bot.send_message(
                 chat_id=order['user_id'],
                 text=f"✅ Your order {order_id} has been accepted!\n\nHere are your codes/account:\n{codes_str}"
@@ -619,8 +606,21 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=order['user_id'], text=f"❌ Your order {order_id} was declined by admin.")
         await query.edit_message_text(f"Order {order_id} declined.")
 
+# -------------------- FLASK HEALTH CHECK SERVER --------------------
+flask_app = Flask('')
+
+@flask_app.route('/')
+def health():
+    return "Bot is running", 200
+
+def run_flask():
+    flask_app.run(host='0.0.0.0', port=PORT)
+
 # -------------------- MAIN --------------------
 def main():
+    # Start Flask health server in background
+    Thread(target=run_flask, daemon=True).start()
+
     app = Application.builder().token(BOT_TOKEN).build()
 
     # User commands
@@ -651,15 +651,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    # Create required tables in Supabase before running:
-    """
-    CREATE TABLE users (user_id BIGINT PRIMARY KEY, username TEXT, first_name TEXT, blocked BOOLEAN DEFAULT FALSE, joined_at TIMESTAMP);
-    CREATE TABLE orders (order_id TEXT PRIMARY KEY, user_id BIGINT, type TEXT, category TEXT, option_name TEXT, quantity INT, price_per_unit DECIMAL, total_amount DECIMAL, payer_name TEXT, screenshot_url TEXT, status TEXT, codes TEXT, created_at TIMESTAMP);
-    CREATE TABLE stocks (id SERIAL PRIMARY KEY, type TEXT, category TEXT, option_name TEXT, available_stock INT, min_quantity INT, price DECIMAL, codes TEXT[]);
-    CREATE TABLE qr_config (id BOOLEAN PRIMARY KEY DEFAULT TRUE, qr_url TEXT);
-    CREATE TABLE bot_status (id BOOLEAN PRIMARY KEY DEFAULT TRUE, is_on BOOLEAN DEFAULT TRUE);
-    -- Insert initial qr_config and bot_status
-    INSERT INTO qr_config (id, qr_url) VALUES (TRUE, 'https://example.com/qr.jpg') ON CONFLICT DO NOTHING;
-    INSERT INTO bot_status (id, is_on) VALUES (TRUE, TRUE) ON CONFLICT DO NOTHING;
-    """
     main()
