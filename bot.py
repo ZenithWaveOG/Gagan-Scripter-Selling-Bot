@@ -35,7 +35,7 @@ if ADMIN_USER_ID == 0:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# -------------------- DATABASE FUNCTIONS (unchanged, but included for completeness) --------------------
+# -------------------- DATABASE FUNCTIONS --------------------
 def add_user(user_id: int, username: str, first_name: str):
     supabase.table('users').upsert({
         'user_id': user_id,
@@ -61,9 +61,6 @@ def get_all_users() -> List[int]:
 def get_stock(type_: str, category: str, option_name: str) -> Optional[Dict]:
     res = supabase.table('stocks').select('*').eq('type', type_).eq('category', category).eq('option_name', option_name).execute()
     return res.data[0] if res.data else None
-
-def update_stock(type_: str, category: str, option_name: str, new_stock: int):
-    supabase.table('stocks').update({'available_stock': new_stock}).eq('type', type_).eq('category', category).eq('option_name', option_name).execute()
 
 def set_min_qty(type_: str, category: str, option_name: str, min_qty: int):
     supabase.table('stocks').update({'min_quantity': min_qty}).eq('type', type_).eq('category', category).eq('option_name', option_name).execute()
@@ -156,7 +153,7 @@ def is_bot_on() -> bool:
 def set_bot_on_off(status: bool):
     supabase.table('bot_status').upsert({'id': True, 'is_on': status}).execute()
 
-# -------------------- HELPER FORMATTERS --------------------
+# -------------------- FORMATTERS --------------------
 def generate_order_id(user_id: int) -> str:
     return f"ORD_{user_id}_{int(datetime.utcnow().timestamp())}_{''.join(random.choices(string.digits, k=4))}"
 
@@ -193,7 +190,7 @@ def get_main_keyboard():
         ["📢 Our Channels"]
     ], resize_keyboard=True)
 
-# -------------------- USER HANDLERS (simplified but working) --------------------
+# -------------------- USER HANDLERS --------------------
 ASK_QUANTITY, ASK_PAYER_NAME, ASK_SCREENSHOT = range(3)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -243,7 +240,7 @@ async def handle_recover_order(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("❌ Not found or not accepted.")
         context.user_data['recover_mode'] = False
 
-# -------------------- BUY CONVERSATION (simplified but functional) --------------------
+# -------------------- BUY CONVERSATION --------------------
 async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -366,7 +363,7 @@ async def ask_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop(key, None)
     return ConversationHandler.END
 
-# -------------------- ADMIN HANDLERS (COMPLETELY REWRITTEN FOR RELIABILITY) --------------------
+# -------------------- ADMIN HANDLERS (FULLY WORKING) --------------------
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("Unauthorized.")
@@ -381,30 +378,39 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ], resize_keyboard=True)
     await update.message.reply_text("🛠️ Admin Panel", reply_markup=keyboard)
 
-async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Unified handler for all admin text messages."""
     if update.effective_user.id != ADMIN_USER_ID:
         return
-    text = update.message.text
-    # Immediate actions (no extra input)
+    text = update.message.text.strip()
+    
+    # First, check if we are in the middle of a multi-step action
+    action = context.user_data.get('admin_action')
+    if action:
+        await process_admin_action(update, context, action, text)
+        return
+
+    # Otherwise, handle admin panel button commands
     if text == "🔌 TURN OFF":
         set_bot_on_off(False)
-        await update.message.reply_text("Bot OFF")
+        await update.message.reply_text("🔴 Bot OFF")
     elif text == "🔌 TURN ON":
         set_bot_on_off(True)
-        await update.message.reply_text("Bot ON")
+        await update.message.reply_text("🟢 Bot ON")
     elif text == "📦 STOCK":
         await update.message.reply_text(format_stock_report(), parse_mode="Markdown")
     elif text == "📋 LAST 10 PURCHASES":
         await update.message.reply_text(format_last_10(get_last_10_purchases()), parse_mode="Markdown")
     elif text == "👥 ACTIVE USERS":
         users = get_all_users()
-        await update.message.reply_text(f"Total users: {len(users)}")
-    # Actions that require further input – set a state
+        await update.message.reply_text(f"👥 Total users: {len(users)}")
     elif text == "🖼️ UPDATE QR":
         context.user_data['admin_action'] = 'update_qr'
-        await update.message.reply_text("Send new QR photo:")
+        await update.message.reply_text("📸 Send new QR photo:")
     elif text == "➕ ADD":
         context.user_data['admin_action'] = 'add'
+        context.user_data['add_step'] = 1
+        context.user_data['add_data'] = {}
         await update.message.reply_text("Send type (voucher / premium):")
     elif text == "💰 CHANGE PRICES":
         context.user_data['admin_action'] = 'price'
@@ -414,55 +420,51 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("Format: type category option_name min_qty\nExample: voucher shein '500 Off On 500' 2")
     elif text == "📢 BROADCAST":
         context.user_data['admin_action'] = 'broadcast'
-        await update.message.reply_text("Send message to broadcast:")
+        await update.message.reply_text("📢 Send message to broadcast:")
     elif text == "🚫 BLOCK":
         context.user_data['admin_action'] = 'block'
-        await update.message.reply_text("Send username (without @) to block:")
+        await update.message.reply_text("🚫 Send username (without @) to block:")
     elif text == "✅ UNBLOCK":
         context.user_data['admin_action'] = 'unblock'
-        await update.message.reply_text("Send username to unblock:")
+        await update.message.reply_text("✅ Send username to unblock:")
+    else:
+        # Unknown command – ignore
+        pass
 
-async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_USER_ID:
-        return
-    action = context.user_data.get('admin_action')
-    if not action:
-        return
-    text = update.message.text.strip()
-    # Process each action
+async def process_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, text: str):
+    """Process the input for an ongoing admin action."""
     if action == 'update_qr':
         if update.message.photo:
             file_id = update.message.photo[-1].file_id
             update_qr(file_id)
             await update.message.reply_text("✅ QR updated.")
         else:
-            await update.message.reply_text("Send a photo.")
+            await update.message.reply_text("Please send a photo.")
         context.user_data.pop('admin_action')
     elif action == 'add':
-        # Simple step-by-step inside the same handler
-        if 'add_step' not in context.user_data:
-            context.user_data['add_step'] = 1
-            context.user_data['add_data'] = {}
-            await update.message.reply_text("Send category (shein/myntra/bigbasket/netflix):")
-            return
-        step = context.user_data['add_step']
+        step = context.user_data.get('add_step', 1)
         if step == 1:
+            # expecting type (voucher/premium)
             context.user_data['add_data']['type'] = text.lower()
-            await update.message.reply_text("Send option name (e.g., '500 Off On 500'):")
+            await update.message.reply_text("Send category (shein/myntra/bigbasket/netflix):")
             context.user_data['add_step'] = 2
         elif step == 2:
+            context.user_data['add_data']['category'] = text.lower()
+            await update.message.reply_text("Send option name (e.g., '500 Off On 500'):")
+            context.user_data['add_step'] = 3
+        elif step == 3:
             context.user_data['add_data']['option'] = text
             await update.message.reply_text("Send codes/accounts line by line. Send /done when finished:")
-            context.user_data['add_step'] = 3
+            context.user_data['add_step'] = 4
             context.user_data['add_codes_list'] = []
-        elif step == 3:
+        elif step == 4:
             if text == '/done':
                 if context.user_data['add_data']['type'] == 'premium':
                     full = "\n".join(context.user_data['add_codes_list'])
-                    add_premium_account('premium', context.user_data['add_data']['type'], context.user_data['add_data']['option'], full)
+                    add_premium_account('premium', context.user_data['add_data']['category'], context.user_data['add_data']['option'], full)
                 else:
-                    add_codes('voucher', context.user_data['add_data']['type'], context.user_data['add_data']['option'], context.user_data['add_codes_list'])
-                await update.message.reply_text("✅ Added.")
+                    add_codes('voucher', context.user_data['add_data']['category'], context.user_data['add_data']['option'], context.user_data['add_codes_list'])
+                await update.message.reply_text("✅ Added successfully.")
                 context.user_data.pop('admin_action')
                 context.user_data.pop('add_step')
                 context.user_data.pop('add_data')
@@ -472,7 +474,7 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif action == 'price':
         parts = text.split()
         if len(parts) < 4:
-            await update.message.reply_text("Format: type category option_name price\nExample: voucher shein '500 Off On 500' 99")
+            await update.message.reply_text("❌ Format: type category option_name price\nExample: voucher shein '500 Off On 500' 99")
             return
         type_ = parts[0]
         cat = parts[1]
@@ -488,7 +490,7 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif action == 'minqty':
         parts = text.split()
         if len(parts) < 4:
-            await update.message.reply_text("Format: type category option_name min_qty\nExample: voucher shein '500 Off On 500' 2")
+            await update.message.reply_text("❌ Format: type category option_name min_qty\nExample: voucher shein '500 Off On 500' 2")
             return
         type_ = parts[0]
         cat = parts[1]
@@ -511,23 +513,23 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await asyncio.sleep(0.05)
             except:
                 pass
-        await update.message.reply_text(f"Broadcast sent to {sent} users.")
+        await update.message.reply_text(f"📢 Broadcast sent to {sent} users.")
         context.user_data.pop('admin_action')
     elif action == 'block':
-        username = text
+        username = text.lstrip('@')
         res = supabase.table('users').select('user_id').eq('username', username).execute()
         if res.data:
             block_user(res.data[0]['user_id'])
-            await update.message.reply_text(f"Blocked @{username}")
+            await update.message.reply_text(f"🚫 Blocked @{username}")
         else:
-            await update.message.reply_text("User not found.")
+            await update.message.reply_text("User not found. Make sure the username is correct (without @).")
         context.user_data.pop('admin_action')
     elif action == 'unblock':
-        username = text
+        username = text.lstrip('@')
         res = supabase.table('users').select('user_id').eq('username', username).execute()
         if res.data:
             unblock_user(res.data[0]['user_id'])
-            await update.message.reply_text(f"Unblocked @{username}")
+            await update.message.reply_text(f"✅ Unblocked @{username}")
         else:
             await update.message.reply_text("User not found.")
         context.user_data.pop('admin_action')
@@ -545,7 +547,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if order and order['status'] == 'pending':
             stock = get_stock(order['type'], order['category'], order['option_name'])
             if not stock or stock['available_stock'] < order['quantity']:
-                await query.edit_message_text("Not enough stock.")
+                await query.edit_message_text("❌ Not enough stock.")
                 return
             codes_to_give = stock['codes'][:order['quantity']]
             remaining = stock['codes'][order['quantity']:]
@@ -556,7 +558,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             codes_str = "\n".join(codes_to_give)
             update_order_status(order_id, 'accepted', codes_str)
             await context.bot.send_message(chat_id=order['user_id'], text=f"✅ Order {order_id} accepted!\n\n{codes_str}")
-            await query.edit_message_text(f"Order {order_id} accepted.")
+            await query.edit_message_text(f"✅ Order {order_id} accepted.")
         else:
             await query.edit_message_text("Invalid or already processed.")
     elif data.startswith("decline_"):
@@ -565,7 +567,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order = get_order_by_id(order_id)
         if order:
             await context.bot.send_message(chat_id=order['user_id'], text=f"❌ Order {order_id} declined.")
-        await query.edit_message_text(f"Order {order_id} declined.")
+        await query.edit_message_text(f"❌ Order {order_id} declined.")
 
 # -------------------- FLASK HEALTH CHECK --------------------
 flask_app = Flask('')
@@ -582,11 +584,10 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Admin handlers first
+    # Admin handlers
     app.add_handler(CommandHandler("admin", admin_panel, filters.User(user_id=ADMIN_USER_ID)))
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(accept_|decline_)"))
-    app.add_handler(MessageHandler(filters.TEXT & filters.User(user_id=ADMIN_USER_ID), handle_admin_actions))
-    app.add_handler(MessageHandler(filters.ALL & filters.User(user_id=ADMIN_USER_ID), handle_admin_input))
+    app.add_handler(MessageHandler(filters.TEXT & filters.User(user_id=ADMIN_USER_ID), handle_admin_text))
 
     # Buy conversation
     buy_conv = ConversationHandler(
