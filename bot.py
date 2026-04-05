@@ -190,6 +190,17 @@ def get_main_keyboard():
         ["📢 Our Channels"]
     ], resize_keyboard=True)
 
+def get_admin_keyboard():
+    return ReplyKeyboardMarkup([
+        ["➕ ADD", "📦 STOCK"],
+        ["💰 CHANGE PRICES", "📉 SET MIN QUANTITY"],
+        ["📢 BROADCAST", "📋 LAST 10 PURCHASES"],
+        ["🖼️ UPDATE QR", "👥 ACTIVE USERS"],
+        ["🚫 BLOCK", "✅ UNBLOCK"],
+        ["🔌 TURN OFF", "🔌 TURN ON"],
+        ["🔙 User Menu"]
+    ], resize_keyboard=True)
+
 # -------------------- USER HANDLERS --------------------
 ASK_QUANTITY, ASK_PAYER_NAME, ASK_SCREENSHOT = range(3)
 
@@ -199,7 +210,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 Bot is OFF. Wait for admin.")
         return
     if is_user_blocked(user.id):
-        await update.message.reply_text("❌ You are blocked.")
+        await update.message.reply_text("❌ You have been blocked by the admin and cannot use this bot.")
         return
     add_user(user.id, user.username, user.first_name)
     await update.message.reply_text(
@@ -208,8 +219,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == ADMIN_USER_ID:
+    user_id = update.effective_user.id
+    if is_user_blocked(user_id):
+        await update.message.reply_text("❌ You are blocked. You cannot use this bot.")
         return
+    if user_id == ADMIN_USER_ID:
+        # Admin might have switched to user menu via the "User Menu" button
+        pass
     text = update.message.text
     if text in ["🛍️ Buy Items", "Buy Items"]:
         keyboard = InlineKeyboardMarkup([
@@ -218,20 +234,27 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await update.message.reply_text("Select:", reply_markup=keyboard)
     elif text in ["📦 My Orders", "My Orders"]:
-        orders = get_user_orders(update.effective_user.id, 'accepted')
+        orders = get_user_orders(user_id, 'accepted')
         await update.message.reply_text(format_my_orders(orders), parse_mode="Markdown")
     elif text in ["🔄 Recover Orders", "Recover Orders"]:
         await update.message.reply_text("Send Order ID:")
         context.user_data['recover_mode'] = True
     elif text in ["🆘 Support", "Support", "support"]:
-        await update.message.reply_text("🆘 **Support**\n@AutoEarnX_SupportBot", parse_mode="Markdown")
+        await update.message.reply_text(
+            "🆘 **Support Contact**\n━━━━━━━━━━━━━━\n@AutoEarnX_SupportBot",
+            parse_mode="Markdown"
+        )
     elif text in ["📢 Our Channels", "Our Channels"]:
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join", url="https://t.me/your_channel")]])
-        await update.message.reply_text("Join our channel:", reply_markup=keyboard)
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Join Channel", url="https://t.me/your_channel")]])
+        await update.message.reply_text("Join our official channel for updates:", reply_markup=keyboard)
     else:
-        await update.message.reply_text("Use buttons.", reply_markup=get_main_keyboard())
+        await update.message.reply_text("Please use the buttons below.", reply_markup=get_main_keyboard())
 
 async def handle_recover_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if is_user_blocked(user_id):
+        await update.message.reply_text("❌ You are blocked.")
+        return
     if context.user_data.get('recover_mode'):
         order = get_order_by_id(update.message.text.strip())
         if order and order['status'] == 'accepted':
@@ -243,6 +266,10 @@ async def handle_recover_order(update: Update, context: ContextTypes.DEFAULT_TYP
 # -------------------- BUY CONVERSATION --------------------
 async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    user_id = query.from_user.id
+    if is_user_blocked(user_id):
+        await query.answer("You are blocked", show_alert=True)
+        return
     await query.answer()
     data = query.data
     if data == "buy_vouchers":
@@ -299,6 +326,10 @@ async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def ask_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if is_user_blocked(user_id):
+        await update.message.reply_text("❌ You are blocked.")
+        return ConversationHandler.END
     try:
         qty = int(update.message.text.strip())
     except:
@@ -321,25 +352,40 @@ async def ask_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("QR not configured. Contact admin.")
         return ConversationHandler.END
     invoice = f"🧾 INVOICE\n🆔 {order_id}\n📦 {context.user_data['option_name']} x{qty}\n💰 Pay: ₹{total:.2f}\n⚠️ Exact amount required.\n⏳ QR valid 10 min."
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Verify Payment", callback_data="verify_payment")]])
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Verify Payment", callback_data="verify_payment")]])
     await update.message.reply_photo(photo=qr_url, caption=invoice, reply_markup=keyboard)
     return ASK_PAYER_NAME
 
 async def verify_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    await update.callback_query.edit_message_text("Enter payer name:")
+    query = update.callback_query
+    user_id = query.from_user.id
+    if is_user_blocked(user_id):
+        await query.answer("You are blocked", show_alert=True)
+        return
+    await query.answer()
+    await query.edit_message_text("Please enter the payer name (the name used for payment):")
     return ASK_PAYER_NAME
 
 async def ask_payer_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if is_user_blocked(user_id):
+        await update.message.reply_text("❌ You are blocked.")
+        return ConversationHandler.END
     context.user_data['payer_name'] = update.message.text.strip()
-    await update.message.reply_text("Send payment screenshot (photo):")
+    await update.message.reply_text("📸 Please send the screenshot of your payment (as photo).")
     return ASK_SCREENSHOT
 
 async def ask_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if is_user_blocked(user_id):
+        await update.message.reply_text("❌ You are blocked.")
+        return ConversationHandler.END
     if not update.message.photo:
-        await update.message.reply_text("Send a photo.")
+        await update.message.reply_text("Please send a photo as screenshot.")
         return ASK_SCREENSHOT
-    file_id = update.message.photo[-1].file_id
+    photo_file = await update.message.photo[-1].get_file()
+    file_id = photo_file.file_id
+    context.user_data['screenshot_url'] = file_id
     create_order(
         order_id=context.user_data['order_id'],
         user_id=update.effective_user.id,
@@ -352,37 +398,34 @@ async def ask_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         payer_name=context.user_data['payer_name'],
         screenshot_url=file_id
     )
-    await update.message.reply_text("Order placed! Awaiting admin approval.")
-    admin_text = f"New order {context.user_data['order_id']} from {update.effective_user.first_name}\n{context.user_data['option_name']} x{context.user_data['quantity']}\n₹{context.user_data['total_amount']}"
+    await update.message.reply_text("⏳ Order placed! Waiting for admin approval.")
+    admin_text = f"🆕 New Order Pending\n🆔 {context.user_data['order_id']}\n👤 {update.effective_user.first_name} (@{update.effective_user.username})\n📦 {context.user_data['option_name']} x{context.user_data['quantity']}\n💰 ₹{context.user_data['total_amount']}\n🧾 Payer: {context.user_data['payer_name']}"
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Accept", callback_data=f"accept_{context.user_data['order_id']}"),
-         InlineKeyboardButton("Decline", callback_data=f"decline_{context.user_data['order_id']}")]
+        [InlineKeyboardButton("✅ Accept", callback_data=f"accept_{context.user_data['order_id']}"),
+         InlineKeyboardButton("❌ Decline", callback_data=f"decline_{context.user_data['order_id']}")]
     ])
     await context.bot.send_message(chat_id=ADMIN_USER_ID, text=admin_text, reply_markup=keyboard)
     for key in ['buy_type', 'category', 'option_name', 'quantity', 'total_amount', 'order_id', 'payer_name', 'product_info']:
         context.user_data.pop(key, None)
     return ConversationHandler.END
 
-# -------------------- ADMIN HANDLERS (FULLY DEBUGGED) --------------------
+# -------------------- ADMIN HANDLERS --------------------
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("Unauthorized.")
         return
-    keyboard = ReplyKeyboardMarkup([
-        ["➕ ADD", "📦 STOCK"],
-        ["💰 CHANGE PRICES", "📉 SET MIN QUANTITY"],
-        ["📢 BROADCAST", "📋 LAST 10 PURCHASES"],
-        ["🖼️ UPDATE QR", "👥 ACTIVE USERS"],
-        ["🚫 BLOCK", "✅ UNBLOCK"],
-        ["🔌 TURN OFF", "🔌 TURN ON"]
-    ], resize_keyboard=True)
-    await update.message.reply_text("🛠️ Admin Panel", reply_markup=keyboard)
+    await update.message.reply_text("🛠️ Admin Panel", reply_markup=get_admin_keyboard())
 
 async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         return
     text = update.message.text.strip()
     
+    # Special: go back to user menu
+    if text == "🔙 User Menu":
+        await update.message.reply_text("Returning to user menu...", reply_markup=get_main_keyboard())
+        return
+
     # Check if we are in the middle of a multi-step action
     action = context.user_data.get('admin_action')
     if action:
@@ -493,8 +536,6 @@ async def process_admin_action(update: Update, context: ContextTypes.DEFAULT_TYP
                 await update.message.reply_text(f"Added. Total codes: {len(context.user_data['add_codes_list'])}. Send another or /done to finish.")
 
     elif action == 'price':
-        # Parse: type category 'option name' price
-        # Try to extract quoted option name
         import re
         match = re.match(r'(\w+)\s+(\w+)\s+(.+?)\s+(\d+(?:\.\d+)?)$', text)
         if not match:
@@ -507,7 +548,6 @@ async def process_admin_action(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("❌ Price must be a number.")
             return
         opt = opt.strip("'\"")
-        # Update database
         set_price(type_, cat, opt, price)
         await update.message.reply_text(f"✅ Price for '{opt}' set to ₹{price}.")
         context.user_data.pop('admin_action')
@@ -570,7 +610,6 @@ async def process_admin_action(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data.pop('admin_action')
 
     else:
-        # Unknown action – reset
         context.user_data.pop('admin_action', None)
         await update.message.reply_text("Action timed out. Please use the admin panel again.")
 
@@ -624,7 +663,7 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Admin handlers (must be first)
+    # Admin handlers
     app.add_handler(CommandHandler("admin", admin_panel, filters.User(user_id=ADMIN_USER_ID)))
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(accept_|decline_)"))
     app.add_handler(MessageHandler(filters.TEXT & filters.User(user_id=ADMIN_USER_ID), handle_admin_text))
