@@ -234,6 +234,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_msg, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Skip if the user is the admin (admin has its own handlers)
+    if update.effective_user.id == ADMIN_USER_ID:
+        return
     text = update.message.text
     user_id = update.effective_user.id
     logger.info(f"Menu text received from {user_id}: '{text}'")
@@ -641,12 +644,13 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # User commands
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu))
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'^ORD_.*'), handle_recover_order))
+    # ========== ADMIN HANDLERS (MUST COME FIRST) ==========
+    app.add_handler(CommandHandler("admin", admin_panel, filters.User(user_id=ADMIN_USER_ID)))
+    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(accept_|decline_)"))
+    app.add_handler(MessageHandler(filters.TEXT & filters.User(user_id=ADMIN_USER_ID), handle_admin_actions))
+    app.add_handler(MessageHandler(filters.ALL & filters.User(user_id=ADMIN_USER_ID), handle_admin_input))
 
-    # Buy conversation
+    # ========== BUY CONVERSATION ==========
     buy_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(buy_callback, pattern="^(buy_|voucher_|opt_|premium_)")],
         states={
@@ -655,16 +659,20 @@ def main():
                              MessageHandler(filters.TEXT & ~filters.COMMAND, ask_payer_name)],
             ASK_SCREENSHOT: [MessageHandler(filters.PHOTO, ask_screenshot)],
         },
-        fallbacks=[CommandHandler("cancel", lambda u,c: u.message.reply_text("Cancelled."))],
+        fallbacks=[CommandHandler("cancel", lambda u, c: u.message.reply_text("Cancelled."))],
         allow_reentry=True
     )
     app.add_handler(buy_conv)
 
-    # Admin handlers
-    app.add_handler(CommandHandler("admin", admin_panel, filters.User(user_id=ADMIN_USER_ID)))
-    app.add_handler(MessageHandler(filters.TEXT & filters.User(user_id=ADMIN_USER_ID), handle_admin_actions))
-    app.add_handler(MessageHandler(filters.ALL & filters.User(user_id=ADMIN_USER_ID), handle_admin_input))
-    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(accept_|decline_)"))
+    # ========== USER MENU & RECOVER (EXCLUDE ADMIN) ==========
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & ~filters.User(user_id=ADMIN_USER_ID),
+        handle_menu
+    ))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'^ORD_.*'), handle_recover_order))
+
+    # ========== START COMMAND ==========
+    app.add_handler(CommandHandler("start", start))
 
     logger.info("Bot started polling...")
     app.run_polling()
