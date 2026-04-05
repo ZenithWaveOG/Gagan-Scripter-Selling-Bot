@@ -35,7 +35,7 @@ if ADMIN_USER_ID == 0:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# -------------------- DATABASE FUNCTIONS --------------------
+# -------------------- DATABASE FUNCTIONS (same as before) --------------------
 def add_user(user_id: int, username: str, first_name: str):
     supabase.table('users').upsert({
         'user_id': user_id,
@@ -206,26 +206,36 @@ ASK_QUANTITY, ASK_PAYER_NAME, ASK_SCREENSHOT = range(3)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not is_bot_on() and user.id != ADMIN_USER_ID:
+    user_id = user.id
+
+    # Clear any pending admin action (if any) – ensures clean state
+    context.user_data.clear()
+
+    if not is_bot_on() and user_id != ADMIN_USER_ID:
         await update.message.reply_text("🚫 Bot is OFF. Wait for admin.")
         return
-    if is_user_blocked(user.id):
+    if is_user_blocked(user_id):
         await update.message.reply_text("❌ You have been blocked by the admin and cannot use this bot.")
         return
-    add_user(user.id, user.username, user.first_name)
+
+    add_user(user_id, user.username, user.first_name)
+
+    # Send welcome message with user menu keyboard (works for both admin and normal users)
     await update.message.reply_text(
         "✨ *Welcome to AutoEarnX Store* ✨\n\nUse the buttons below.",
-        parse_mode="Markdown", reply_markup=get_main_keyboard()
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard()
     )
+    # If the user is admin, also send a small note that they are in user mode now
+    if user_id == ADMIN_USER_ID:
+        await update.message.reply_text("ℹ️ You are now in user mode. Use /admin to return to admin panel.")
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if is_user_blocked(user_id):
         await update.message.reply_text("❌ You are blocked. You cannot use this bot.")
         return
-    if user_id == ADMIN_USER_ID:
-        # Admin might have switched to user menu via the "User Menu" button
-        pass
+    # Admin can also use the user menu if they have the user keyboard
     text = update.message.text
     if text in ["🛍️ Buy Items", "Buy Items"]:
         keyboard = InlineKeyboardMarkup([
@@ -414,6 +424,8 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("Unauthorized.")
         return
+    # Clear any pending action to start fresh
+    context.user_data.clear()
     await update.message.reply_text("🛠️ Admin Panel", reply_markup=get_admin_keyboard())
 
 async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -682,9 +694,9 @@ def main():
     )
     app.add_handler(buy_conv)
 
-    # User handlers
+    # User handlers (including admin when using user menu)
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.User(user_id=ADMIN_USER_ID), handle_menu))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'^ORD_.*'), handle_recover_order))
 
     logger.info("Bot started polling...")
