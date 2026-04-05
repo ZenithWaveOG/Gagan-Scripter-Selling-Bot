@@ -35,7 +35,7 @@ if ADMIN_USER_ID == 0:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# -------------------- DATABASE FUNCTIONS (same as before) --------------------
+# -------------------- DATABASE FUNCTIONS --------------------
 def add_user(user_id: int, username: str, first_name: str):
     supabase.table('users').upsert({
         'user_id': user_id,
@@ -493,7 +493,7 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['admin_action'] = 'unblock'
         await update.message.reply_text("✅ Send the username (without @) to unblock:")
     else:
-        # Unknown text – ignore
+        # Unknown text – ignore (do nothing)
         pass
 
 async def process_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, text: str):
@@ -675,12 +675,20 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Admin handlers
+    # IMPORTANT: Order of handlers matters!
+    # 1. Start command (must be before admin text handler so /start works for admin)
+    app.add_handler(CommandHandler("start", start))
+
+    # 2. Admin handlers (commands and callbacks)
     app.add_handler(CommandHandler("admin", admin_panel, filters.User(user_id=ADMIN_USER_ID)))
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(accept_|decline_)"))
-    app.add_handler(MessageHandler(filters.TEXT & filters.User(user_id=ADMIN_USER_ID), handle_admin_text))
+    # Exclude commands from admin text handler so that /start etc. are not blocked
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.User(user_id=ADMIN_USER_ID),
+        handle_admin_text
+    ))
 
-    # Buy conversation
+    # 3. Buy conversation
     buy_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(buy_callback, pattern="^(buy_|voucher_|opt_|premium_)")],
         states={
@@ -694,8 +702,7 @@ def main():
     )
     app.add_handler(buy_conv)
 
-    # User handlers (including admin when using user menu)
-    app.add_handler(CommandHandler("start", start))
+    # 4. User menu and recover order handlers (for all users, including admin when in user mode)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'^ORD_.*'), handle_recover_order))
 
