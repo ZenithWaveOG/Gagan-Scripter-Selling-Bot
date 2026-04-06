@@ -230,14 +230,22 @@ def get_admin_keyboard():
         ["🔙 User Menu"]
     ], resize_keyboard=True)
 
-# -------------------- SIMPLE STATE MACHINE (NO CONVERSATION HANDLER COMPLEXITY) --------------------
-# We'll use user_data flags instead of ConversationHandler for the buy flow.
-# States: None, 'awaiting_quantity', 'awaiting_payer_name', 'awaiting_screenshot'
+# -------------------- STATE CLEARING HELPER --------------------
+def clear_buy_state(context: ContextTypes.DEFAULT_TYPE):
+    """Remove all buy-flow related keys from user_data."""
+    keys_to_remove = [
+        'state', 'buy_type', 'category', 'option_name', 'product_info',
+        'quantity', 'total_amount', 'order_id', 'payer_name', 'screenshot_url',
+        'awaiting_payer_name', 'add_step', 'add_data', 'add_codes_list'
+    ]
+    for key in keys_to_remove:
+        context.user_data.pop(key, None)
 
+# -------------------- USER HANDLERS --------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    context.user_data.clear()  # reset any pending buy state
+    clear_buy_state(context)  # reset any ongoing buy flow
 
     if not is_bot_on() and user_id != ADMIN_USER_ID:
         await update.message.reply_text("🚫 *Bot is currently OFF.*\nPlease wait for the admin to turn it on.", parse_mode="Markdown")
@@ -265,6 +273,12 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = update.message.text
+
+    # If user presses any menu button while in a buy flow, clear the state
+    if context.user_data.get('state'):
+        clear_buy_state(context)
+        await update.message.reply_text("🔄 *Previous purchase cancelled.* You can start a new one.", parse_mode="Markdown")
+
     if text in ["🛍️ Buy Items", "Buy Items"]:
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🎫 Vouchers", callback_data="buy_vouchers")],
@@ -323,8 +337,11 @@ async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("You are blocked", show_alert=True)
         return
     await query.answer()
-    data = query.data
 
+    # Clear any previous buy state before starting new purchase
+    clear_buy_state(context)
+
+    data = query.data
     if data == "buy_vouchers":
         await query.edit_message_text("🎫 *Select voucher brand:*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("👗 Shein", callback_data="voucher_shein")],
@@ -406,7 +423,7 @@ async def handle_buy_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         info = context.user_data.get('product_info')
         if not info:
             await update.message.reply_text("❌ Session expired. Please start over with /start")
-            context.user_data.clear()
+            clear_buy_state(context)
             return
         if qty < info['min_quantity']:
             await update.message.reply_text(f"⚠️ *Quantity below minimum* ({info['min_quantity']}). Please send a higher number.", parse_mode="Markdown")
@@ -422,14 +439,13 @@ async def handle_buy_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         qr_url = get_qr()
         if not qr_url:
             await update.message.reply_text("⚠️ *QR code not configured.* Please contact admin.", parse_mode="Markdown")
-            context.user_data.clear()
+            clear_buy_state(context)
             return
         invoice_text = format_invoice(order_id, context.user_data['option_name'], qty, total)
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Verify Payment", callback_data="verify_payment")]])
         await update.message.reply_photo(photo=qr_url, caption=invoice_text, parse_mode="Markdown", reply_markup=keyboard)
         context.user_data['state'] = 'awaiting_payment_verification'
     elif state == 'awaiting_payment_verification':
-        # This case should not happen because the button will trigger the callback.
         await update.message.reply_text("Please click the 'Verify Payment' button to continue.")
     elif state == 'awaiting_payer_name':
         payer_name = update.message.text.strip()
@@ -473,7 +489,7 @@ async def handle_buy_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("❌ Decline", callback_data=f"decline_{context.user_data['order_id']}")]
         ])
         await context.bot.send_message(chat_id=ADMIN_USER_ID, text=admin_text, parse_mode="Markdown", reply_markup=keyboard)
-        context.user_data.clear()  # end buy session
+        clear_buy_state(context)  # end buy session
     else:
         # Not in buy flow, ignore
         pass
@@ -486,19 +502,18 @@ async def verify_payment_global(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer("You are blocked", show_alert=True)
         return
     await query.answer()
-    # Check if user is in the correct state
     if context.user_data.get('state') == 'awaiting_payment_verification':
         await query.edit_message_text("📝 *Please enter the payer name* (the name used for payment):", parse_mode="Markdown")
         context.user_data['state'] = 'awaiting_payer_name'
     else:
         await query.answer("No active order or already processed. Please start a new purchase with /start", show_alert=True)
 
-# -------------------- ADMIN HANDLERS (unchanged but included) --------------------
+# -------------------- ADMIN HANDLERS --------------------
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("❌ Unauthorized.")
         return
-    context.user_data.clear()
+    clear_buy_state(context)
     await update.message.reply_text("🛠️ *Admin Panel* – use the buttons below.", parse_mode="Markdown", reply_markup=get_admin_keyboard())
 
 async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -741,13 +756,13 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'^ORD_.*'), handle_recover_order))
 
-    # Buy flow callbacks (inline keyboards)
+    # Buy flow callbacks
     app.add_handler(CallbackQueryHandler(buy_callback, pattern="^(buy_|voucher_|opt_|premium_)"))
     app.add_handler(CallbackQueryHandler(verify_payment_global, pattern="^verify_payment$"))
 
-    # Buy flow text input (quantity, payer name, screenshot)
+    # Buy flow text/photo input
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buy_input))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_buy_input))  # for screenshot
+    app.add_handler(MessageHandler(filters.PHOTO, handle_buy_input))
 
     # Admin handlers
     app.add_handler(CommandHandler("admin", admin_panel, filters.User(user_id=ADMIN_USER_ID)))
