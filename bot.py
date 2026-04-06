@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://yourproject.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "your-anon-key")
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
+ADMIN_USER_ID = 8537079657  # put your real ID here
 PORT = int(os.environ.get("PORT", 10000))
 
 if ADMIN_USER_ID == 0:
@@ -185,9 +185,9 @@ def format_stock_report() -> str:
 # -------------------- KEYBOARDS --------------------
 def get_main_keyboard():
     return ReplyKeyboardMarkup([
-        ["🛍️ Buy Items", "📦 My Orders"],
-        ["🔄 Recover Orders", "🆘 Support"],
-        ["📢 Our Channels"]
+        ["🛒 Buy Items"],
+        ["📦 My Orders", "🔄 Recover"],
+        ["💬 Support", "📢 Channel"]
     ], resize_keyboard=True)
 
 def get_admin_keyboard():
@@ -239,8 +239,10 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text in ["🛍️ Buy Items", "Buy Items"]:
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎫 Vouchers", callback_data="buy_vouchers")],
-            [InlineKeyboardButton("⭐ Premiums", callback_data="buy_premiums")]
+            [
+                InlineKeyboardButton("🎫 Vouchers", callback_data="buy_vouchers"),
+                InlineKeyboardButton("⭐ Premium", callback_data="buy_premiums")
+            ]
         ])
         await update.message.reply_text("Select:", reply_markup=keyboard)
     elif text in ["📦 My Orders", "My Orders"]:
@@ -361,8 +363,19 @@ async def ask_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not qr_url:
         await update.message.reply_text("QR not configured. Contact admin.")
         return ConversationHandler.END
-    invoice = f"🧾 INVOICE\n🆔 {order_id}\n📦 {context.user_data['option_name']} x{qty}\n💰 Pay: ₹{total:.2f}\n⚠️ Exact amount required.\n⏳ QR valid 10 min."
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Verify Payment", callback_data="verify_payment")]])
+    invoice = f"""
+    🧾 *ORDER INVOICE*
+    ━━━━━━━━━━━━━━
+    🆔 Order: `{order_id}`
+    📦 Item: *{context.user_data['option_name']}*
+    🔢 Qty: {qty}
+
+    💰 Total: *₹{total:.2f}*
+
+    ⚠️ Send *exact amount*
+    ⏳ Valid for 10 minutes
+    """
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💳 I Have Paid", callback_data="verify_payment")]])
     await update.message.reply_photo(photo=qr_url, caption=invoice, reply_markup=keyboard)
     return ASK_PAYER_NAME
 
@@ -373,7 +386,11 @@ async def verify_payment_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.answer("You are blocked", show_alert=True)
         return
     await query.answer()
-    await query.edit_message_text("Please enter the payer name (the name used for payment):")
+    await query.edit_message_text(
+        "💳 *Payment Verification*\n━━━━━━━━━━━━━━\n\n"
+        "👤 Send the *payer name* used in payment:",
+        parse_mode="Markdown"
+    )
     return ASK_PAYER_NAME
 
 async def ask_payer_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -382,8 +399,17 @@ async def ask_payer_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ You are blocked.")
         return ConversationHandler.END
     context.user_data['payer_name'] = update.message.text.strip()
-    await update.message.reply_text("📸 Please send the screenshot of your payment (as photo).")
-    return ASK_SCREENSHOT
+        await query.edit_message_text(
+            "💳 *Payment Verification*\n"
+            "━━━━━━━━━━━━━━\n\n"
+            "🧾 *Step 1/2*\n\n"
+            "👤 Send the *payer name*\n"
+            "📌 (Name used while making payment)\n\n"
+            "💡 Example:\n"
+            "`Rahul Sharma`",
+            parse_mode="Markdown"
+        )
+        return ASK_PAYER_NAME
 
 async def ask_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -391,7 +417,15 @@ async def ask_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ You are blocked.")
         return ConversationHandler.END
     if not update.message.photo:
-        await update.message.reply_text("Please send a photo as screenshot.")
+        await update.message.reply_text(
+            "📸 *Step 2/2 – Upload Screenshot*\n"
+            "━━━━━━━━━━━━━━\n\n"
+            "🖼️ Send payment screenshot\n"
+            "⚠️ Must be *clear & full*\n\n"
+            "❌ Don't send as file\n"
+            "✅ Send as *photo*",
+            parse_mode="Markdown"
+        )
         return ASK_SCREENSHOT
     photo_file = await update.message.photo[-1].get_file()
     file_id = photo_file.file_id
@@ -408,8 +442,24 @@ async def ask_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         payer_name=context.user_data['payer_name'],
         screenshot_url=file_id
     )
-    await update.message.reply_text("⏳ Order placed! Waiting for admin approval.")
-    admin_text = f"🆕 New Order Pending\n🆔 {context.user_data['order_id']}\n👤 {update.effective_user.first_name} (@{update.effective_user.username})\n📦 {context.user_data['option_name']} x{context.user_data['quantity']}\n💰 ₹{context.user_data['total_amount']}\n🧾 Payer: {context.user_data['payer_name']}"
+    await update.message.reply_text(
+        "✅ *Order Placed Successfully!*\n━━━━━━━━━━━━━━\n\n"
+        "⏳ Waiting for admin approval\n"
+        "📩 You will receive your order soon",
+        parse_mode="Markdown"
+    )
+    admin_text = f"""
+    🆕 *NEW ORDER*
+    ━━━━━━━━━━━━━━
+    🆔 `{context.user_data['order_id']}`
+    👤 {update.effective_user.first_name}
+
+    📦 {context.user_data['option_name']}
+    🔢 Qty: {context.user_data['quantity']}
+
+    💰 ₹{context.user_data['total_amount']}
+    🧾 Payer: {context.user_data['payer_name']}
+    """
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Accept", callback_data=f"accept_{context.user_data['order_id']}"),
          InlineKeyboardButton("❌ Decline", callback_data=f"decline_{context.user_data['order_id']}")]
@@ -692,10 +742,15 @@ def main():
     buy_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(buy_callback, pattern="^(buy_|voucher_|opt_|premium_)")],
         states={
-            ASK_QUANTITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_quantity)],
-            ASK_PAYER_NAME: [CallbackQueryHandler(verify_payment_callback, pattern="verify_payment"),
-                             MessageHandler(filters.TEXT & ~filters.COMMAND, ask_payer_name)],
-            ASK_SCREENSHOT: [MessageHandler(filters.PHOTO, ask_screenshot)],
+            ASK_QUANTITY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_quantity)
+            ],
+            ASK_PAYER_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_payer_name)
+            ],
+            ASK_SCREENSHOT: [
+                MessageHandler(filters.PHOTO, ask_screenshot)
+            ],
         },
         fallbacks=[CommandHandler("cancel", lambda u, c: u.message.reply_text("Cancelled."))],
         allow_reentry=True
@@ -705,6 +760,7 @@ def main():
     # 4. User menu and recover order handlers (for all users, including admin when in user mode)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'^ORD_.*'), handle_recover_order))
+    app.add_handler(CallbackQueryHandler(verify_payment_callback, pattern="verify_payment"))
 
     logger.info("Bot started polling...")
     app.run_polling()
