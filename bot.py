@@ -259,7 +259,13 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text
     # If user is in a buy flow and presses a menu button, cancel the flow
-    if context.user_data.get('state'):
+    menu_buttons = [
+        "🛍️ Buy Items", "📦 My Orders",
+        "🔄 Recover Orders", "🆘 Support",
+        "📢 Our Channels"
+    ]
+
+    if context.user_data.get('state') and text in menu_buttons:
         context.user_data.clear()
         await update.message.reply_text("🔄 *Purchase cancelled.* You can start a new one.", parse_mode="Markdown")
 
@@ -720,6 +726,8 @@ def main():
 
     # User handlers
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buy_input))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_buy_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'^ORD_.*'), handle_recover_order))
 
