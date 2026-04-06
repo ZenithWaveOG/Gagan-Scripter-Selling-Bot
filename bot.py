@@ -35,7 +35,7 @@ if ADMIN_USER_ID == 0:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# -------------------- DATABASE FUNCTIONS --------------------
+# -------------------- DATABASE FUNCTIONS (same as before) --------------------
 def add_user(user_id: int, username: str, first_name: str):
     supabase.table('users').upsert({
         'user_id': user_id,
@@ -153,7 +153,7 @@ def is_bot_on() -> bool:
 def set_bot_on_off(status: bool):
     supabase.table('bot_status').upsert({'id': True, 'is_on': status}).execute()
 
-# -------------------- FORMATTERS (BEAUTIFUL UI) --------------------
+# -------------------- FORMATTERS --------------------
 def generate_order_id(user_id: int) -> str:
     return f"ORD_{user_id}_{int(datetime.utcnow().timestamp())}_{''.join(random.choices(string.digits, k=4))}"
 
@@ -230,9 +230,10 @@ def get_admin_keyboard():
         ["🔙 User Menu"]
     ], resize_keyboard=True)
 
-# -------------------- USER HANDLERS --------------------
+# -------------------- CONVERSATION STATES --------------------
 ASK_QUANTITY, ASK_PAYER_NAME, ASK_SCREENSHOT = range(3)
 
+# -------------------- USER HANDLERS --------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
@@ -294,7 +295,13 @@ async def handle_recover_order(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ You are blocked.")
         return
     if context.user_data.get('recover_mode'):
-        order = get_order_by_id(update.message.text.strip())
+        order_id = update.message.text.strip()
+        # Accept any order ID format (must start with ORD_)
+        if not order_id.startswith("ORD_"):
+            await update.message.reply_text("❌ *Invalid Order ID format.* It should start with `ORD_`.", parse_mode="Markdown")
+            context.user_data['recover_mode'] = False
+            return
+        order = get_order_by_id(order_id)
         if order and order['status'] == 'accepted':
             await update.message.reply_text(
                 f"✅ *ORDER FOUND*\n━━━━━━━━━━━━━━━━━━━\n"
@@ -411,8 +418,10 @@ async def ask_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     invoice_text = format_invoice(order_id, context.user_data['option_name'], qty, total)
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Verify Payment", callback_data="verify_payment")]])
     await update.message.reply_photo(photo=qr_url, caption=invoice_text, parse_mode="Markdown", reply_markup=keyboard)
+    # Now go to ASK_PAYER_NAME state and wait for the button press
     return ASK_PAYER_NAME
 
+# --- Global handler for Verify Payment button ---
 async def verify_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -420,17 +429,35 @@ async def verify_payment_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.answer("You are blocked", show_alert=True)
         return
     await query.answer()
-    await query.edit_message_text("📝 *Please enter the payer name* (the name used for payment):", parse_mode="Markdown")
-    return ASK_PAYER_NAME
+    # Check if the user is in the correct state and has an active order
+    if context.user_data.get('order_id') and context.user_data.get('product_info'):
+        await query.edit_message_text("📝 *Please enter the payer name* (the name used for payment):", parse_mode="Markdown")
+        # Set a flag to indicate we are waiting for payer name
+        context.user_data['awaiting_payer_name'] = True
+        # Stay in the same conversation (we don't return a state, but the conversation is still active)
+        # The next message will be handled by ask_payer_name
+    else:
+        await query.answer("No active order. Please start a new purchase with /start", show_alert=True)
 
 async def ask_payer_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if is_user_blocked(user_id):
         await update.message.reply_text("❌ You are blocked.")
         return ConversationHandler.END
-    context.user_data['payer_name'] = update.message.text.strip()
-    await update.message.reply_text("📸 *Now send the screenshot* of your payment (as a photo).", parse_mode="Markdown")
-    return ASK_SCREENSHOT
+    # If we are waiting for payer name from the button
+    if context.user_data.get('awaiting_payer_name'):
+        context.user_data['awaiting_payer_name'] = False
+        payer_name = update.message.text.strip()
+        if not payer_name:
+            await update.message.reply_text("❌ Payer name cannot be empty. Please send the name again.")
+            return ASK_PAYER_NAME
+        context.user_data['payer_name'] = payer_name
+        await update.message.reply_text("📸 *Now send the screenshot* of your payment (as a photo).", parse_mode="Markdown")
+        return ASK_SCREENSHOT
+    else:
+        # If someone sends a message while not expecting payer name
+        await update.message.reply_text("❌ Please click the 'Verify Payment' button first to confirm your payment.")
+        return ASK_PAYER_NAME
 
 async def ask_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -470,7 +497,8 @@ async def ask_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("❌ Decline", callback_data=f"decline_{context.user_data['order_id']}")]
     ])
     await context.bot.send_message(chat_id=ADMIN_USER_ID, text=admin_text, parse_mode="Markdown", reply_markup=keyboard)
-    for key in ['buy_type', 'category', 'option_name', 'quantity', 'total_amount', 'order_id', 'payer_name', 'product_info']:
+    # Clean up
+    for key in ['buy_type', 'category', 'option_name', 'quantity', 'total_amount', 'order_id', 'payer_name', 'product_info', 'awaiting_payer_name']:
         context.user_data.pop(key, None)
     return ConversationHandler.END
 
@@ -717,12 +745,13 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Order matters: start first, then admin, then conversation, then menu
+    # Order of handlers matters
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_panel, filters.User(user_id=ADMIN_USER_ID)))
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(accept_|decline_)"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.User(user_id=ADMIN_USER_ID), handle_admin_text))
 
+    # Buy conversation with the global verify_payment handler
     buy_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(buy_callback, pattern="^(buy_|voucher_|opt_|premium_)")],
         states={
@@ -736,8 +765,9 @@ def main():
     )
     app.add_handler(buy_conv)
 
+    # User menu and recover order
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu))
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'^ORD_.*'), handle_recover_order))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_recover_order))  # catches any text; but the regex is inside
 
     logger.info("Bot started polling...")
     app.run_polling()
